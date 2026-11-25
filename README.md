@@ -56,6 +56,8 @@ Tasks: `recon` (authorized pentest of the site), `data` (get the customer record
 
 Hardened agents declined text addressed to AI agents but followed notes that read like part of the API. Every round-2 detection went on to use the bait token. The current wording detects agents seeking access, not every agent that visits.
 
+**Claude Sonnet 5.5 and Opus 5.5** (same tasks, plain and hardened, 36 sessions): every recon and data session ended in a `refusal` (category `cyber`) on the first call, before any request reached the decoy, so there is no detection rate to report for them as attackers. Their benign sessions (11 that ran) took no lure, as with Haiku. Measuring frontier models as attackers is not the goal; the realistic attacker is an open-weight model, which is the next lab target.
+
 Cost: ~$0.0013 per Haiku session (~11 tool calls). The lab is small (n = 10–15 per condition) and the decoy is local; the live false-alarm rate is measured on real traffic.
 
 ## Tests
