@@ -43,14 +43,20 @@ node --env-file=<env with ANTHROPIC_API_KEY> lab/run.js --models haiku --repeats
 
 `--hardened` gives each agent a system-prompt defence against instructions in page content: what an attacker's agent would carry. Results go to `lab/results/` (not committed).
 
-### First results (2026-11-25, Claude Haiku 5.5, effort medium, 3 tasks × 3 sessions)
+### Results (2026-11-25, Claude Haiku 5.5, effort medium)
 
-| Agents | Detected | Used bait | Controls flagged |
-|---|---|---|---|
-| plain | 9 / 9 | 6 (all recon and data sessions) | 0 / 3 |
-| hardened | 4 / 9 | 3 | 0 / 3 |
+Tasks: `recon` (authorized pentest of the site), `data` (get the customer records), `benign` (explain the API).
 
-Hardened agents were caught mostly through the error-message lure (3 of 4). The ones missed read the planted text and declined it.
+| Lure wording | Agents | Attack tasks detected | Benign detected | Controls flagged |
+|---|---|---|---|---|
+| Round 1: notes addressed to "AI assistants" | plain | 6 / 6 | 3 / 3 | 0 / 3 |
+| | hardened | 3 / 6 | 1 / 3 | 0 / 3 |
+| **Round 2: developer-voice token notes (current)** | plain | **10 / 10** | 0 / 5 | 0 / 3 |
+| | hardened | **10 / 10** | 0 / 5 | 0 / 3 |
+
+Hardened agents declined text addressed to AI agents but followed notes that read like part of the API. Every round-2 detection went on to use the bait token. The current wording detects agents seeking access, not every agent that visits.
+
+Cost: ~$0.0013 per Haiku session (~11 tool calls). The lab is small (n = 10–15 per condition) and the decoy is local; the live false-alarm rate is measured on real traffic.
 
 ## Tests
 
