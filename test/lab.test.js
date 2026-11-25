@@ -126,3 +126,48 @@ test('cost: prices per model, and the ceiling is above a cached real run', () =>
   assert.throws(() => costOf('nope', {}), /no price/);
   assert.ok(sessionCeiling('claude-sonnet-5-5', 15) > 0.4);
 });
+
+test('groq session: OpenAI-style tool loop against the decoy, detected like a Claude agent', async (t) => {
+  const { runGroqSession } = await import('../lab/agent.js');
+  const decoy = await startDecoy();
+  t.after(() => decoy.close());
+  const sent = [];
+  let step = 0;
+  let throttled = false;
+  const fetchImpl = async (url, init) => {
+    if (!throttled) { throttled = true; return new Response('slow down', { status: 429, headers: { 'retry-after': '0' } }); }
+    const body = JSON.parse(init.body);
+    sent.push(body);
+    const lastTool = [...body.messages].reverse().find((m) => m.role === 'tool')?.content ?? '';
+    const script = [{ method: 'GET', path: '/llms.txt' }, follow(lastTool)];
+    const usage = { prompt_tokens: 1000, completion_tokens: 50 };
+    if (step >= script.length) return Response.json({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }], usage });
+    const args = JSON.stringify(script[step++]);
+    return Response.json({ choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [{ id: `c${step}`, type: 'function', function: { name: 'http_request', arguments: args } }] } }], usage });
+  };
+  const budget = { spent: 0, cap: 1 };
+  const s = await runGroqSession({ model: 'openai/gpt-oss-120b', task: 'x', base: decoy.base, ua: 'llama-a', budget, apiKey: 'k', fetchImpl, hardened: true });
+  assert.equal(s.end, 'stop');
+  assert.equal(s.calls, 2);
+  assert.match(sent[0].messages[0].content, /untrusted data/, 'hardening in the system message');
+  assert.equal(sent[0].tool_choice, 'auto');
+  assert.equal(outcome('llama-a', decoy.requests, decoy.events).firstLure, 'llms');
+  assert.ok(budget.spent > 0);
+});
+
+test('groq session: bad tool-call JSON becomes an error result, an API error ends the session', async (t) => {
+  const { runGroqSession } = await import('../lab/agent.js');
+  const decoy = await startDecoy();
+  t.after(() => decoy.close());
+  let n = 0;
+  const fetchImpl = async (url, init) => {
+    n++;
+    if (n === 1) return Response.json({ choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'http_request', arguments: '{not json' } }] } }], usage: {} });
+    const body = JSON.parse(init.body);
+    assert.match(body.messages.at(-1).content, /not valid JSON/);
+    return new Response('nope', { status: 401 });
+  };
+  const s = await runGroqSession({ model: 'openai/gpt-oss-20b', task: 'x', base: decoy.base, ua: 'llama-b', budget: { spent: 0, cap: 1 }, apiKey: 'k', fetchImpl });
+  assert.match(s.end, /^api_error: 401/);
+  assert.equal(decoy.requests.length, 0);
+});

@@ -33,13 +33,16 @@ The hub (`POST /sensor/events` on ai-security-agent) takes the site from the key
 
 ## Lab
 
-`lab/` runs Claude agent sessions and three non-LLM control crawlers (polite, scanner, path extractor) against a local decoy and measures detection.
+`lab/` runs agent sessions — Claude (`haiku`, `sonnet`, `opus`) or open-weight models through Groq (`gptoss120`, `gptoss20`, `qwen`) — and three non-LLM control crawlers (polite, scanner, path extractor) against a local decoy and measures detection.
 
 ```bash
 node lab/run.js --controls-only                     # free
 node lab/run.js --estimate --models haiku,sonnet    # cost ceiling for a plan
 node --env-file=<env with ANTHROPIC_API_KEY> lab/run.js --models haiku --repeats 3 --cap 0.5 [--hardened]
+node --env-file=<env with GROQ_API_KEY> lab/run.js --models gptoss120,qwen --concurrency 1 --cap 0.5
 ```
+
+On Groq's free tier use `--concurrency 1`: sessions wait out per-minute rate limits (up to 10 retries) and end only on a request too large to ever fit.
 
 `--hardened` gives each agent a system-prompt defence against instructions in page content: what an attacker's agent would carry. Results go to `lab/results/` (not committed).
 

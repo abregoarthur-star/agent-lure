@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startDecoy } from './decoy.js';
 import { CONTROLS } from './controls.js';
-import { runAgentSession, PRICES } from './agent.js';
+import { runAgentSession, runGroqSession, PRICES } from './agent.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,6 +25,10 @@ export const MODELS = {
   haiku: { model: 'claude-haiku-5-5', effort: 'medium' },
   sonnet: { model: 'claude-sonnet-5-5', effort: 'medium' },
   opus: { model: 'claude-opus-5-5', effort: 'medium' },
+  // Open-weight models through Groq (GROQ_API_KEY).
+  gptoss120: { model: 'openai/gpt-oss-120b', provider: 'groq' },
+  gptoss20: { model: 'openai/gpt-oss-20b', provider: 'groq' },
+  qwen: { model: 'qwen/qwen3.8-27b', provider: 'groq' },
 };
 
 // What a visiting agent was asked to do. The lure must work whatever the goal.
@@ -72,6 +76,7 @@ function args(argv) {
     else if (a === '--max-calls') out.maxCalls = Number(next());
     else if (a === '--controls-only') out.controlsOnly = true;
     else if (a === '--hardened') out.hardened = true;
+    else if (a === '--concurrency') out.concurrency = Number(next());
     else if (a === '--estimate') out.estimate = true;
     else throw new Error(`unknown argument ${a}`);
   }
@@ -115,7 +120,8 @@ async function main() {
   console.log(`plan: ${Object.keys(CONTROLS).length} controls + ${plan.length} agent sessions (${opt.models.join(', ')} × ${opt.tasks.join(', ')} × ${opt.repeats}), ≤${opt.maxCalls} tool calls each`);
   console.log(`cost: worst case $${ceiling.toFixed(2)}, hard stop at $${opt.cap.toFixed(2)}`);
   if (opt.estimate) return;
-  if (plan.length && !process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set (run with --env-file)');
+  if (plan.some((p) => !MODELS[p.m].provider) && !process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set (run with --env-file)');
+  if (plan.some((p) => MODELS[p.m].provider === 'groq') && !process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY is not set (run with --env-file)');
 
   const decoy = await startDecoy({ secret: `lab-${Date.now()}-${Math.random().toString(36).slice(2)}` });
   const runId = new Date().toISOString().replace(/[:.]/g, '-');
@@ -129,12 +135,14 @@ async function main() {
 
     let sessions = [];
     if (plan.length) {
-      const { default: Anthropic } = await import('@anthropic-ai/sdk');
-      const client = new Anthropic();
+      const client = plan.some((p) => !MODELS[p.m].provider) ? new (await import('@anthropic-ai/sdk')).default() : null;
       const budget = { spent: 0, cap: opt.cap };
       sessions = await pool(plan, opt.concurrency, async ({ m, t, r }) => {
         const ua = `lab-agent-${m}${opt.hardened ? '-h' : ''}-${t}-${r}`;
-        const s = await runAgentSession({ client, ...MODELS[m], task: TASKS[t](decoy.base), base: decoy.base, ua, maxCalls: opt.maxCalls, budget, hardened: !!opt.hardened });
+        const common = { task: TASKS[t](decoy.base), base: decoy.base, ua, maxCalls: opt.maxCalls, budget, hardened: !!opt.hardened };
+        const s = MODELS[m].provider === 'groq'
+          ? await runGroqSession({ model: MODELS[m].model, ...common })
+          : await runAgentSession({ client, model: MODELS[m].model, effort: MODELS[m].effort, ...common });
         const o = outcome(ua, decoy.requests, decoy.events);
         console.log(`${ua.padEnd(28)} ${o.detected ? 'DETECTED' : 'missed  '} ${String(o.firstLure ?? '-').padEnd(13)} req ${String(o.requests).padStart(2)} ${s.end} $${s.costUsd.toFixed(3)}`);
         return { key: opt.hardened ? `${m}-hardened` : m, task: t, repeat: r, ...s, ...o };

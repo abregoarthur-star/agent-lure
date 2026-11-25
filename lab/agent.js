@@ -14,6 +14,12 @@ export const PRICES = {
   'claude-haiku-5-5': { in: 0.10, out: 0.50 },
   'claude-sonnet-5-5': { in: 2.00, out: 10.00 },
   'claude-opus-5-5': { in: 4.00, out: 20.00 },
+  // Groq: approximate list prices, used only for the run's spend cap — check
+  // console.groq.com/settings/billing for the real figures. (Groq retired its
+  // Llama chat models by 2026-11; these are the open-weight tool-use models it serves.)
+  'openai/gpt-oss-120b': { in: 0.15, out: 0.75 },
+  'openai/gpt-oss-20b': { in: 0.10, out: 0.50 },
+  'qwen/qwen3.8-27b': { in: 0.30, out: 0.60 },
 };
 
 export function costOf(model, u) {
@@ -124,5 +130,67 @@ export async function runAgentSession({ client, model, effort, task, base, ua, m
     messages.push({ role: 'user', content: results });
   }
 
-  return { model, effort, hardened, ua, calls, end, report: report.slice(0, 2000), usage, costUsd: costOf(model, usage) };
+  return { model, effort, hardened, ua, calls, end,
+    report: report.slice(0, 2000), usage, costUsd: costOf(model, usage) };
+}
+
+/**
+ * The same session on an open-weight model through Groq's OpenAI-compatible
+ * chat API (an open model is the realistic attacker: no provider safeguards).
+ * Same tool, same system prompt, same budget and call limit.
+ */
+export async function runGroqSession({ model, task, base, ua, maxCalls = 15, budget, hardened = false, apiKey = process.env.GROQ_API_KEY, fetchImpl = fetch }) {
+  const system = hardened ? SYSTEM + HARDENING : SYSTEM;
+  const messages = [{ role: 'system', content: system }, { role: 'user', content: task }];
+  const tools = [{ type: 'function', function: { name: TOOL.name, description: TOOL.description, parameters: TOOL.input_schema } }];
+  const usage = { input_tokens: 0, output_tokens: 0 };
+  let calls = 0;
+  let end = 'max_calls';
+  let report = '';
+
+  while (calls < maxCalls) {
+    if (budget.spent >= budget.cap) { end = 'budget'; break; }
+    let data;
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetchImpl('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', max_tokens: 2048 }),
+        signal: AbortSignal.timeout(60_000),
+      }).catch((err) => ({ ok: false, status: 0, text: async () => err.message, headers: new Headers() }));
+      if (res.ok) { data = await res.json(); break; }
+      const text = await res.text();
+      // Free-tier per-minute limits: wait as told (header, or "try again in 7.5s"
+      // in the message) and retry. "Request too large" can never succeed: stop.
+      if (res.status === 429 && !/Request too large/.test(text) && attempt < 10) {
+        const hinted = Number(res.headers.get('retry-after')) || Number(text.match(/try again in ([\d.]+)s/)?.[1]);
+        await new Promise((r) => setTimeout(r, Math.min(Math.max(hinted || 10, 1) + 1, 65) * 1000));
+        continue;
+      }
+      end = `api_error: ${res.status} ${text.slice(0, 150)}`;
+      break;
+    }
+    if (!data) break;
+
+    usage.input_tokens += data.usage?.prompt_tokens || 0;
+    usage.output_tokens += data.usage?.completion_tokens || 0;
+    budget.spent += costOf(model, { input_tokens: data.usage?.prompt_tokens, output_tokens: data.usage?.completion_tokens });
+    const msg = data.choices?.[0]?.message;
+    if (!msg) { end = 'empty_response'; break; }
+    messages.push(msg);
+    if (msg.content) report = msg.content;
+    const toolCalls = msg.tool_calls || [];
+    if (!toolCalls.length) { end = data.choices[0].finish_reason || 'stop'; break; }
+
+    for (const call of toolCalls) {
+      calls++;
+      let input = null;
+      try { input = JSON.parse(call.function?.arguments || '{}'); } catch { /* invalid JSON → error result */ }
+      const out = call.function?.name !== TOOL.name ? { text: `Error: unknown tool ${call.function?.name}` }
+        : input ? await httpTool(base, ua, input) : { text: 'Error: arguments were not valid JSON' };
+      messages.push({ role: 'tool', tool_call_id: call.id, content: out.text });
+    }
+  }
+
+  return { model, effort: null, hardened, ua, calls, end, report: report.slice(0, 2000), usage, costUsd: costOf(model, usage) };
 }
