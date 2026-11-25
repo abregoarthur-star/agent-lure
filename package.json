@@ -1,0 +1,27 @@
+{
+  "name": "@dj_abstract/agent-lure",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lure sensor that detects AI agents by what they do with text only a machine reads: planted instructions, robots.txt, bait keys. Reports hits to a hub.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "author": "Arthur Abrego",
+  "license": "MIT",
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^1.14.0"
+  }
+}
